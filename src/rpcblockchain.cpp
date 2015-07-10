@@ -10,6 +10,9 @@
 #include "rpcserver.h"
 #include "sync.h"
 #include "util.h"
+#include "base58.h"
+#include "utilmoneystr.h"
+#include <inttypes.h>
 
 #include <stdint.h>
 
@@ -846,6 +849,182 @@ UniValue reconsiderblock(const UniValue& params, bool fHelp)
     if (!state.IsValid()) {
         throw JSONRPCError(RPC_DATABASE_ERROR, state.GetRejectReason());
     }
+
+    return NullUniValue;
+}
+
+UniValue exportchain(const UniValue& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "exportchain\n"
+            "\nExports block chain.\n"
+            "\nResult:\n"
+            "\nExamples:\n"
+            + HelpExampleCli("exportchain", "")
+            + HelpExampleRpc("exportchain", "")
+        );
+
+    LOCK(cs_main);
+
+    int nHeight;
+    int tx_count = 0;
+    uint256 lastblockhash;
+    std::string dslstr;
+
+    // for (nHeight = 0; nHeight < chainActive.Height(); nHeight = nHeight + 1)
+    for (nHeight = chainActive.Height()-5; nHeight < chainActive.Height(); nHeight = nHeight + 1)
+    {
+        CBlockIndex* blockindex = chainActive[nHeight];
+        uint256 hash = blockindex->GetBlockHash();
+
+        CBlock block;
+
+        if (fHavePruned && !(blockindex->nStatus & BLOCK_HAVE_DATA) && blockindex->nTx > 0)
+            LogPrintf("Bitcoin: Block not available (pruned data) -  Block Index: %d\n", nHeight);
+
+        if(!ReadBlockFromDisk(block, blockindex))
+            LogPrintf("Bitcoin: Can't read block from disk -  Block Index: %d\n", nHeight);
+
+
+        uint256 blockhash = block.GetHash();
+        int confirmations = -1;
+        // Only report confirmations if the block is on the main chain
+        if (chainActive.Contains(blockindex)) {
+            confirmations = chainActive.Height() - blockindex->nHeight + 1;
+        }
+        int blocksize = (int)::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+        int blockheight = blockindex->nHeight;
+        int blockversion = block.nVersion;
+        uint256 merkleroot(uint256S( block.hashMerkleRoot.GetHex() ));
+        int64_t blocktime = block.GetBlockTime();
+        uint64_t blocknonce = (uint64_t)block.nNonce;
+        uint32_t blockbits = block.nBits;
+        double blockdifficulty = GetDifficulty(blockindex);
+        uint256 chainwork(uint256S( blockindex->nChainWork.GetHex() ));
+
+        // Block Artifact
+        LogPrintf("type:Artifact id:%s blockheight:%d confirmations:%d blocksize:%d blockversion:%d merkleroot:%s blocktime:%" PRId64 " blocknonce:%" PRIu64 " blockbits:%" PRIu32 " blockdifficulty:%lf chainwork:%s\n" ,
+            block.GetHash().GetHex(),
+            blockindex->nHeight,
+            confirmations,
+            (int)::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION), // blocksize
+            block.nVersion,
+            block.hashMerkleRoot.GetHex(), // merkleroot
+            block.GetBlockTime(),
+            (uint64_t)block.nNonce,
+            block.nBits,
+            GetDifficulty(blockindex),
+            blockindex->nChainWork.GetHex());
+
+        BOOST_FOREACH(const CTransaction&tx, block.vtx)
+        {
+                tx_count++;
+
+                uint256 txid = tx.GetHash();
+                int txversion = tx.nVersion;
+                int64_t txloctime = (int64_t)tx.nLockTime;
+
+                // Tx Artifact
+                // how to find total value of tx ?
+                LogPrintf("type:Artifact id:%s txversion:%d txloctime:%" PRId64 " \n",
+                    tx.GetHash().GetHex(),
+                    tx.nVersion,
+                    (int64_t)tx.nLockTime);
+                // put an edge to the block - put total value of the transaction on the edge?
+                LogPrintf("type:WasDerivedFrom to:%s from:%s\n",
+                    tx.GetHash().GetHex(),
+                    block.GetHash().GetHex());
+
+                BOOST_FOREACH(const CTxIn& txin, tx.vin) { // each vin in each transaction in each block in blockchain
+                    int64_t vin_sequence = (int64_t)txin.nSequence;
+                    if (tx.IsCoinBase()) {
+                        std::string vin_coinbase = HexStr(txin.scriptSig.begin(), txin.scriptSig.end()) ;
+
+                        // vin
+                        LogPrintf("type:Process id:%s type:coinbase\n",
+                            HexStr(txin.scriptSig.begin(), txin.scriptSig.end()));
+                        // put an edge here
+                        LogPrintf("type:Used to:%s from:%s\n",
+                            tx.GetHash().GetHex(),
+                            HexStr(txin.scriptSig.begin(), txin.scriptSig.end()));
+                    } else {
+                        uint256 vin_txid(uint256S( txin.prevout.hash.GetHex() ));
+                        int64_t vin_voutn = (int64_t)txin.prevout.n;
+                        std::string vin_scriptsig_asm = txin.scriptSig.ToString();
+                        std::string vin_scriptsig_hex = HexStr(txin.scriptSig.begin(), txin.scriptSig.end());
+
+                        // vin - doesn't report relation with n in vout
+                        LogPrintf("type:Process id:%s type:txid\n",
+                            txin.prevout.hash.GetHex());
+                        // put an edge here
+                        // these scripts are longer, have spaces in them, and look useless in a visual presentation of things
+                        // LogPrintf("type:Used to:%s from:%s vin_scriptsig_asm:%s vin_scriptsig_hex:%s\n",
+                        //     tx.GetHash().GetHex(),
+                        //     txin.prevout.hash.GetHex(),
+                        //     txin.scriptSig.ToString(),
+                        //     HexStr(txin.scriptSig.begin(), txin.scriptSig.end()));
+                        LogPrintf("type:Used to:%s from:%s\n",
+                            tx.GetHash().GetHex(),
+                            txin.prevout.hash.GetHex());
+                    }
+                }
+
+                for (unsigned int i = 0; i < tx.vout.size(); i++) {
+                    const CTxOut& txout = tx.vout[i];
+                    std::string vout_value = FormatMoney(txout.nValue);
+                    int64_t vout_n = (int64_t)i;
+
+                    // ScriptPubKeyToJSON
+                    txnouttype type;
+                    vector<CTxDestination> addresses;
+                    int nRequired;
+
+                    std::string vout_scriptpubkey_asm = txout.scriptPubKey.ToString();
+                    std::string vout_scriptpubkey_hex = HexStr(txout.scriptPubKey.begin(), txout.scriptPubKey.end());
+
+                    const char* vout_type;
+                    if (!ExtractDestinations(txout.scriptPubKey, type, addresses, nRequired)) {
+                        vout_type = GetTxnOutputType(type);
+                    } else {
+
+                        int reqsigs = nRequired; // what does this mean here?
+                        vout_type = GetTxnOutputType(type);
+
+                        BOOST_FOREACH(const CTxDestination& addr, addresses) { // in practive addresses is always just one address
+                            std::string vout_address = CBitcoinAddress(addr).ToString();
+
+                            // vout
+                            LogPrintf("type:Process id:%s type:txid\n",
+                                CBitcoinAddress(addr).ToString()); 
+                            // put an edge here with // put the rest to the edge (vout_value, scripts , reqsings)
+                            // LogPrintf("type:Used from:%s to:%s value:%s pubkeyasm:%s pubkeyhex:%s reqsig:%d\n",
+                            //     CBitcoinAddress(addr).ToString(),
+                            //     tx.GetHash().GetHex(),
+                            //     FormatMoney(txout.nValue),
+                            //     txout.scriptPubKey.ToString(),
+                            //     HexStr(txout.scriptPubKey.begin(), txout.scriptPubKey.end()),
+                            //     reqsigs);
+                            LogPrintf("type:Used from:%s to:%s value:%s reqsig:%d\n",
+                                CBitcoinAddress(addr).ToString(),
+                                tx.GetHash().GetHex(),
+                                FormatMoney(txout.nValue),
+                                reqsigs);
+                        }
+                    }
+                }
+        }
+        // FIX THIS
+        // put an edge from lastblock to current block
+        // if (lastblockhash.GetHex()!=0) {
+            LogPrintf("type:WasDerivedFrom from:%s to:%s\n",
+                lastblockhash.GetHex(),
+                block.GetHash().GetHex());
+        // }
+        lastblockhash = block.GetHash();
+    }
+    LogPrintf("Bitcoin: Total transactions reported %d\n", tx_count);
+    LogPrintf("Bitcoin: Total blocks reported %d\n", chainActive.Height());
 
     return NullUniValue;
 }
