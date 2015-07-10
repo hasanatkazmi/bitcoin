@@ -853,6 +853,21 @@ UniValue reconsiderblock(const UniValue& params, bool fHelp)
     return NullUniValue;
 }
 
+// static void writetodsl(FILE* fp, const char* format, ...) {
+static void writetodsl(int fd, const char* format, ...) {
+    // LogPrintf(line);
+    va_list args;
+    va_start(args, format);
+    // vprintf(format, args);
+    // fprintf(fp, format, args); // crashing somehow
+    // char buf[1024] = {0};
+    char* buf = new char[1024];
+    sprintf(buf, format, args); ////
+    // printf(buf);
+    // write(fd, buf, sizeof(buf));
+    va_end(args);
+}
+
 UniValue exportchain(const UniValue& params, bool fHelp)
 {
     if (fHelp || params.size() != 0)
@@ -870,7 +885,13 @@ UniValue exportchain(const UniValue& params, bool fHelp)
     int nHeight;
     int tx_count = 0;
     uint256 lastblockhash;
-    std::string dslstr;
+    // std::string dslstr;
+    int fd;
+    char* pipe = "/tmp/spade_pipe";
+    mkfifo(pipe, 0666);
+    fd = open(pipe, O_WRONLY);
+    // FILE* fp = fdopen(fd, "w");
+    // write(fd, "type:Artifact id:12",sizeof("type:Artifact id:12"));
 
     // for (nHeight = 0; nHeight < chainActive.Height(); nHeight = nHeight + 1)
     for (nHeight = chainActive.Height()-5; nHeight < chainActive.Height(); nHeight = nHeight + 1)
@@ -904,18 +925,18 @@ UniValue exportchain(const UniValue& params, bool fHelp)
         uint256 chainwork(uint256S( blockindex->nChainWork.GetHex() ));
 
         // Block Artifact
-        LogPrintf("type:Artifact id:%s blockheight:%d confirmations:%d blocksize:%d blockversion:%d merkleroot:%s blocktime:%" PRId64 " blocknonce:%" PRIu64 " blockbits:%" PRIu32 " blockdifficulty:%lf chainwork:%s\n" ,
-            block.GetHash().GetHex(),
+        writetodsl(fd,"type:Artifact id:%s blockheight:%d confirmations:%d blocksize:%d blockversion:%d merkleroot:%s blocktime:%" PRId64 " blocknonce:%" PRIu64 " blockbits:%" PRIu32 " blockdifficulty:%lf chainwork:%s\n" ,
+            block.GetHash().GetHex().c_str(),
             blockindex->nHeight,
             confirmations,
             (int)::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION), // blocksize
             block.nVersion,
-            block.hashMerkleRoot.GetHex(), // merkleroot
+            block.hashMerkleRoot.GetHex().c_str(), // merkleroot
             block.GetBlockTime(),
             (uint64_t)block.nNonce,
             block.nBits,
             GetDifficulty(blockindex),
-            blockindex->nChainWork.GetHex());
+            blockindex->nChainWork.GetHex().c_str());
 
         BOOST_FOREACH(const CTransaction&tx, block.vtx)
         {
@@ -927,14 +948,14 @@ UniValue exportchain(const UniValue& params, bool fHelp)
 
                 // Tx Artifact
                 // how to find total value of tx ?
-                LogPrintf("type:Artifact id:%s txversion:%d txloctime:%" PRId64 " \n",
-                    tx.GetHash().GetHex(),
+                writetodsl(fd,"type:Artifact id:%s txversion:%d txloctime:%" PRId64 " \n",
+                    tx.GetHash().GetHex().c_str(),
                     tx.nVersion,
                     (int64_t)tx.nLockTime);
                 // put an edge to the block - put total value of the transaction on the edge?
-                LogPrintf("type:WasDerivedFrom to:%s from:%s\n",
-                    tx.GetHash().GetHex(),
-                    block.GetHash().GetHex());
+                writetodsl(fd,"type:WasDerivedFrom to:%s from:%s\n",
+                    tx.GetHash().GetHex().c_str(),
+                    block.GetHash().GetHex().c_str());
 
                 BOOST_FOREACH(const CTxIn& txin, tx.vin) { // each vin in each transaction in each block in blockchain
                     int64_t vin_sequence = (int64_t)txin.nSequence;
@@ -942,12 +963,12 @@ UniValue exportchain(const UniValue& params, bool fHelp)
                         std::string vin_coinbase = HexStr(txin.scriptSig.begin(), txin.scriptSig.end()) ;
 
                         // vin
-                        LogPrintf("type:Process id:%s type:coinbase\n",
-                            HexStr(txin.scriptSig.begin(), txin.scriptSig.end()));
+                        writetodsl(fd,"type:Process id:%s type:coinbase\n",
+                            HexStr(txin.scriptSig.begin(), txin.scriptSig.end()).c_str());
                         // put an edge here
-                        LogPrintf("type:Used to:%s from:%s\n",
-                            tx.GetHash().GetHex(),
-                            HexStr(txin.scriptSig.begin(), txin.scriptSig.end()));
+                        writetodsl(fd,"type:Used to:%s from:%s\n",
+                            tx.GetHash().GetHex().c_str(),
+                            HexStr(txin.scriptSig.begin(), txin.scriptSig.end()).c_str());
                     } else {
                         uint256 vin_txid(uint256S( txin.prevout.hash.GetHex() ));
                         int64_t vin_voutn = (int64_t)txin.prevout.n;
@@ -955,8 +976,8 @@ UniValue exportchain(const UniValue& params, bool fHelp)
                         std::string vin_scriptsig_hex = HexStr(txin.scriptSig.begin(), txin.scriptSig.end());
 
                         // vin - doesn't report relation with n in vout
-                        LogPrintf("type:Process id:%s type:txid\n",
-                            txin.prevout.hash.GetHex());
+                        writetodsl(fd,"type:Process id:%s type:txid\n",
+                            txin.prevout.hash.GetHex().c_str());
                         // put an edge here
                         // these scripts are longer, have spaces in them, and look useless in a visual presentation of things
                         // LogPrintf("type:Used to:%s from:%s vin_scriptsig_asm:%s vin_scriptsig_hex:%s\n",
@@ -964,9 +985,9 @@ UniValue exportchain(const UniValue& params, bool fHelp)
                         //     txin.prevout.hash.GetHex(),
                         //     txin.scriptSig.ToString(),
                         //     HexStr(txin.scriptSig.begin(), txin.scriptSig.end()));
-                        LogPrintf("type:Used to:%s from:%s\n",
-                            tx.GetHash().GetHex(),
-                            txin.prevout.hash.GetHex());
+                        writetodsl(fd,"type:Used to:%s from:%s\n",
+                            tx.GetHash().GetHex().c_str(),
+                            txin.prevout.hash.GetHex().c_str());
                     }
                 }
 
@@ -995,8 +1016,8 @@ UniValue exportchain(const UniValue& params, bool fHelp)
                             std::string vout_address = CBitcoinAddress(addr).ToString();
 
                             // vout
-                            LogPrintf("type:Process id:%s type:txid\n",
-                                CBitcoinAddress(addr).ToString()); 
+                            writetodsl(fd,"type:Process id:%s type:txid\n",
+                                CBitcoinAddress(addr).ToString().c_str()); 
                             // put an edge here with // put the rest to the edge (vout_value, scripts , reqsings)
                             // LogPrintf("type:Used from:%s to:%s value:%s pubkeyasm:%s pubkeyhex:%s reqsig:%d\n",
                             //     CBitcoinAddress(addr).ToString(),
@@ -1005,10 +1026,10 @@ UniValue exportchain(const UniValue& params, bool fHelp)
                             //     txout.scriptPubKey.ToString(),
                             //     HexStr(txout.scriptPubKey.begin(), txout.scriptPubKey.end()),
                             //     reqsigs);
-                            LogPrintf("type:Used from:%s to:%s value:%s reqsig:%d\n",
-                                CBitcoinAddress(addr).ToString(),
-                                tx.GetHash().GetHex(),
-                                FormatMoney(txout.nValue),
+                            writetodsl(fd,"type:Used from:%s to:%s value:%s reqsig:%d\n",
+                                CBitcoinAddress(addr).ToString().c_str(),
+                                tx.GetHash().GetHex().c_str(),
+                                FormatMoney(txout.nValue).c_str(),
                                 reqsigs);
                         }
                     }
@@ -1017,12 +1038,15 @@ UniValue exportchain(const UniValue& params, bool fHelp)
         // FIX THIS
         // put an edge from lastblock to current block
         // if (lastblockhash.GetHex()!=0) {
-            LogPrintf("type:WasDerivedFrom from:%s to:%s\n",
-                lastblockhash.GetHex(),
-                block.GetHash().GetHex());
+            writetodsl(fd,"type:WasDerivedFrom from:%s to:%s\n",
+                lastblockhash.GetHex().c_str(),
+                block.GetHash().GetHex().c_str());
         // }
         lastblockhash = block.GetHash();
     }
+
+    close(fd);
+    // unlink(pipe);
     LogPrintf("Bitcoin: Total transactions reported %d\n", tx_count);
     LogPrintf("Bitcoin: Total blocks reported %d\n", chainActive.Height());
 
