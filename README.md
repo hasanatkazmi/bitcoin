@@ -1,5 +1,7 @@
+
 These modifications add another RPC call (exportchain) to the bitcoind that writes whole blockchain to a unix pipe enabling you to export entire block chain to a socket or to your filesystem.
-========
+
+-----
 
 Bitcoin Core integration/staging tree
 =====================================
